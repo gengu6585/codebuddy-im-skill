@@ -8,7 +8,6 @@ CORE_DIR="$INSTALL_ROOT/Claude-to-IM"
 WORKSPACE="/workspace/tinkerlab"
 CTI_HOME="/root/.claude-to-im"
 SERVICE_NAME="codebuddy-im-skill.service"
-OLD_SERVICE="codebuddy-telegram-bot-native.service"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "❌ Run as root inside the Ubuntu container"
@@ -23,10 +22,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_SKILL="$(cd "$SCRIPT_DIR/.." && pwd)"
 SRC_CORE="$(cd "$SRC_SKILL/../Claude-to-IM" 2>/dev/null && pwd || true)"
-
-echo "→ Stop legacy Python telegram-bot-bridge (if present)"
-systemctl stop "$OLD_SERVICE" 2>/dev/null || true
-systemctl disable "$OLD_SERVICE" 2>/dev/null || true
 
 echo "→ Install packages"
 export DEBIAN_FRONTEND=noninteractive
