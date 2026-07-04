@@ -43,7 +43,7 @@ build_env_dict() {
       ;;
   esac
   case "$runtime" in
-    claude|auto)
+    claude|codebuddy|auto)
       # Auto-forward all ANTHROPIC_* env vars (sourced from config.env by daemon.sh).
       # Third-party API providers need these to reach the CLI subprocess.
       while IFS='=' read -r name val; do

@@ -18,7 +18,13 @@ import type { LLMProvider } from 'claude-to-im/src/lib/bridge/host.js';
 import { loadConfig, configToSettings, CTI_HOME } from './config.js';
 import type { Config } from './config.js';
 import { JsonFileStore } from './store.js';
-import { SDKLLMProvider, resolveClaudeCliPath, preflightCheck } from './llm-provider.js';
+import {
+  SDKLLMProvider,
+  resolveClaudeCliPath,
+  resolveCodeBuddyCliPath,
+  preflightCheck,
+  type SdkCliBackend,
+} from './llm-provider.js';
 import { PendingPermissions } from './permission-gateway.js';
 import { setupLogger } from './logger.js';
 
@@ -29,6 +35,7 @@ const PID_FILE = path.join(RUNTIME_DIR, 'bridge.pid');
 /**
  * Resolve the LLM provider based on the runtime setting.
  * - 'claude' (default): uses Claude Code SDK via SDKLLMProvider
+ * - 'codebuddy': uses CodeBuddy CLI via Claude Agent SDK compatibility
  * - 'codex': uses @openai/codex-sdk via CodexProvider
  * - 'auto': tries Claude first, falls back to Codex
  */
@@ -44,10 +51,10 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
     const cliPath = resolveClaudeCliPath();
     if (cliPath) {
       // Auto mode: preflight the resolved CLI before committing to it.
-      const check = preflightCheck(cliPath);
+      const check = preflightCheck(cliPath, 'claude');
       if (check.ok) {
         console.log(`[claude-to-im] Auto: using Claude CLI at ${cliPath} (${check.version})`);
-        return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);
+        return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove, 'claude');
       }
       // Preflight failed — fall through to Codex instead of silently using a broken CLI
       console.warn(
@@ -61,38 +68,45 @@ async function resolveProvider(config: Config, pendingPerms: PendingPermissions)
     return new CodexProvider(pendingPerms);
   }
 
-  // Default: claude
-  const cliPath = resolveClaudeCliPath();
+  const backend: SdkCliBackend = runtime === 'codebuddy' ? 'codebuddy' : 'claude';
+  const cliPath = backend === 'codebuddy' ? resolveCodeBuddyCliPath() : resolveClaudeCliPath();
   if (!cliPath) {
-    console.error(
-      '[claude-to-im] FATAL: Cannot find the `claude` CLI executable.\n' +
-      '  Tried: CTI_CLAUDE_CODE_EXECUTABLE env, /usr/local/bin/claude, /opt/homebrew/bin/claude, ~/.npm-global/bin/claude, ~/.local/bin/claude\n' +
-      '  Fix: Install Claude Code CLI (https://docs.anthropic.com/en/docs/claude-code) or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/claude\n' +
-      '  Or: Set CTI_RUNTIME=codex to use Codex instead',
-    );
+    const fatalMessage = backend === 'codebuddy'
+      ? '[claude-to-im] FATAL: Cannot find the `codebuddy` CLI executable.\n' +
+        '  Tried: CTI_CODEBUDDY_EXECUTABLE env, codebuddy/cbc in PATH, /usr/local/bin/codebuddy, /opt/homebrew/bin/codebuddy, ~/.local/bin/codebuddy\n' +
+        '  Fix: Install CodeBuddy Code or set CTI_CODEBUDDY_EXECUTABLE=/path/to/codebuddy'
+      : '[claude-to-im] FATAL: Cannot find the `claude` CLI executable.\n' +
+        '  Tried: CTI_CLAUDE_CODE_EXECUTABLE env, /usr/local/bin/claude, /opt/homebrew/bin/claude, ~/.npm-global/bin/claude, ~/.local/bin/claude\n' +
+        '  Fix: Install Claude Code CLI (https://docs.anthropic.com/en/docs/claude-code) or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/claude\n' +
+        '  Or: Set CTI_RUNTIME=codex to use Codex instead';
+    console.error(fatalMessage);
     process.exit(1);
   }
 
   // Preflight: verify the CLI can actually run in the daemon environment.
-  // In claude runtime this is fatal — starting with a broken CLI would just
+  // In claude/codebuddy runtime this is fatal — starting with a broken CLI would just
   // defer the error to the first user message, which is harder to diagnose.
-  const check = preflightCheck(cliPath);
+  const check = preflightCheck(cliPath, backend);
   if (check.ok) {
     console.log(`[claude-to-im] CLI preflight OK: ${cliPath} (${check.version})`);
   } else {
+    const fixBlock = backend === 'codebuddy'
+      ? '    1. Install or update CodeBuddy Code to a recent 2.x build\n' +
+        '    2. Or set CTI_CODEBUDDY_EXECUTABLE=/path/to/correct/codebuddy'
+      : '    1. Install Claude Code CLI >= 2.x: https://docs.anthropic.com/en/docs/claude-code\n' +
+        '    2. Or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/correct/claude\n' +
+        '    3. Or set CTI_RUNTIME=auto to fall back to Codex';
     console.error(
-      `[claude-to-im] FATAL: Claude CLI preflight check failed.\n` +
+      `[claude-to-im] FATAL: ${backend === 'codebuddy' ? 'CodeBuddy' : 'Claude'} CLI preflight check failed.\n` +
       `  Path: ${cliPath}\n` +
       `  Error: ${check.error}\n` +
       `  Fix:\n` +
-      `    1. Install Claude Code CLI >= 2.x: https://docs.anthropic.com/en/docs/claude-code\n` +
-      `    2. Or set CTI_CLAUDE_CODE_EXECUTABLE=/path/to/correct/claude\n` +
-      `    3. Or set CTI_RUNTIME=auto to fall back to Codex`,
+      fixBlock,
     );
     process.exit(1);
   }
 
-  return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove);
+  return new SDKLLMProvider(pendingPerms, cliPath, config.autoApprove, backend);
 }
 
 interface StatusInfo {

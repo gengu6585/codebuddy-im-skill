@@ -53,7 +53,7 @@ clean_env() {
           case "$name" in ANTHROPIC_*) unset "$name" 2>/dev/null || true ;; esac
         done < <(env)
         ;;
-      claude)
+      claude|codebuddy)
         # Keep ANTHROPIC_* (from config.env) — needed for third-party API providers.
         # Strip OPENAI_* to avoid cross-runtime leakage.
         while IFS='=' read -r name _; do

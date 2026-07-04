@@ -42,8 +42,18 @@ CTI_RUNTIME="${CTI_RUNTIME:-claude}"
 echo "Runtime: $CTI_RUNTIME"
 echo ""
 
-# --- Claude CLI available (claude/auto modes) ---
-if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
+# --- SDK backend CLI available (claude/codebuddy/auto modes) ---
+if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "codebuddy" ] || [ "$CTI_RUNTIME" = "auto" ]; then
+  CLI_KIND="Claude"
+  CLI_BIN="claude"
+  CLI_ENV_KEY="CTI_CLAUDE_CODE_EXECUTABLE"
+  CLI_LOGIN_HINT="claude auth login"
+  if [ "$CTI_RUNTIME" = "codebuddy" ]; then
+    CLI_KIND="CodeBuddy"
+    CLI_BIN="codebuddy"
+    CLI_ENV_KEY="CTI_CODEBUDDY_EXECUTABLE"
+    CLI_LOGIN_HINT="codebuddy login"
+  fi
   # Resolve CLI path matching the daemon's checkCliCompatibility logic:
   #   - Version >= 2.x AND all required flags present
   #   - Skip candidates that fail either check (same as resolveClaudeCliPath)
@@ -84,7 +94,10 @@ if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
 
   # 1. Explicit env var — if set, daemon uses it unconditionally (no fallback).
   #    Doctor must mirror this: report on this path only, never scan further.
-  CTI_EXE=$(get_config CTI_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true)
+  CTI_EXE=$(get_config "$CLI_ENV_KEY" 2>/dev/null || true)
+  if [ "$CTI_RUNTIME" = "codebuddy" ] && [ -z "$CTI_EXE" ]; then
+    CTI_EXE=$(get_config CTI_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true)
+  fi
   if [ -n "$CTI_EXE" ]; then
     if [ -x "$CTI_EXE" ]; then
       if ! try_candidate "$CTI_EXE"; then
@@ -102,7 +115,7 @@ if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
 
   # 2. All PATH candidates (only if no explicit env var was set)
   if [ -z "$CTI_EXE" ] && [ -z "$CLAUDE_PATH" ]; then
-    ALL_CLAUDES=$(which -a claude 2>/dev/null || true)
+    ALL_CLAUDES=$(which -a "$CLI_BIN" 2>/dev/null || true)
     for cand in $ALL_CLAUDES; do
       try_candidate "$cand" && break
     done
@@ -110,24 +123,35 @@ if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
 
   # 3. Well-known locations (only if no explicit env var was set)
   if [ -z "$CTI_EXE" ] && [ -z "$CLAUDE_PATH" ]; then
-    for cand in \
-      "$HOME/.claude/local/claude" \
-      "$HOME/.local/bin/claude" \
-      "/usr/local/bin/claude" \
-      "/opt/homebrew/bin/claude" \
-      "$HOME/.npm-global/bin/claude"; do
+    if [ "$CTI_RUNTIME" = "codebuddy" ]; then
+      CANDIDATES=(
+        "$HOME/.local/bin/codebuddy"
+        "/usr/local/bin/codebuddy"
+        "/opt/homebrew/bin/codebuddy"
+        "$HOME/.npm-global/bin/codebuddy"
+      )
+    else
+      CANDIDATES=(
+        "$HOME/.claude/local/claude"
+        "$HOME/.local/bin/claude"
+        "/usr/local/bin/claude"
+        "/opt/homebrew/bin/claude"
+        "$HOME/.npm-global/bin/claude"
+      )
+    fi
+    for cand in "${CANDIDATES[@]}"; do
       try_candidate "$cand" && break
     done
   fi
 
   if [ -n "$CLAUDE_PATH" ] && [ "$CLAUDE_COMPAT" = "0" ]; then
-    check "Claude CLI compatible (${CLAUDE_VER} at ${CLAUDE_PATH})" 0
+    check "${CLI_KIND} CLI compatible (${CLAUDE_VER} at ${CLAUDE_PATH})" 0
   elif [ -n "$CLAUDE_PATH" ]; then
     # Path found but incompatible (too old, missing flags, or not executable)
-    check "Claude CLI compatible (${CLAUDE_VER} at ${CLAUDE_PATH} — incompatible, see above)" 1
+    check "${CLI_KIND} CLI compatible (${CLAUDE_VER} at ${CLAUDE_PATH} — incompatible, see above)" 1
   else
-    if [ "$CTI_RUNTIME" = "claude" ]; then
-      check "Claude CLI available (not found in PATH or common locations)" 1
+    if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "codebuddy" ]; then
+      check "${CLI_KIND} CLI available (not found in PATH or common locations)" 1
     else
       check "Claude CLI available (not found — will use Codex fallback)" 0
     fi
@@ -147,9 +171,9 @@ if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
     else
       AUTH_OUT=$("$CLAUDE_PATH" auth status 2>&1 || true)
       if echo "$AUTH_OUT" | grep -qiE 'loggedIn.*true|logged.in'; then
-        check "Claude CLI authenticated" 0
+        check "${CLI_KIND} CLI authenticated" 0
       else
-        check "Claude CLI authenticated (run 'claude auth login')" 1
+        check "${CLI_KIND} CLI authenticated (run '${CLI_LOGIN_HINT}')" 1
       fi
     fi
   fi
@@ -207,12 +231,12 @@ if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "auto" ]; then
     fi
   done
   if [ -n "$SDK_CLI" ]; then
-    check "Claude SDK cli.js exists ($SDK_CLI)" 0
+    check "Agent SDK cli.js exists ($SDK_CLI)" 0
   else
-    if [ "$CTI_RUNTIME" = "claude" ]; then
-      check "Claude SDK cli.js exists (not found — run 'npm install' in $SKILL_DIR)" 1
+    if [ "$CTI_RUNTIME" = "claude" ] || [ "$CTI_RUNTIME" = "codebuddy" ]; then
+      check "Agent SDK cli.js exists (not found — run 'npm install' in $SKILL_DIR)" 1
     else
-      check "Claude SDK cli.js exists (not found — OK for auto/codex mode)" 0
+      check "Agent SDK cli.js exists (not found — OK for auto/codex mode)" 0
     fi
   fi
 fi

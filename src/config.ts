@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 export interface Config {
-  runtime: 'claude' | 'codex' | 'auto';
+  runtime: 'claude' | 'codebuddy' | 'codex' | 'auto';
   enabledChannels: string[];
   defaultWorkDir: string;
   defaultModel?: string;
@@ -78,7 +78,11 @@ export function loadConfig(): Config {
   }
 
   const rawRuntime = env.get("CTI_RUNTIME") || "claude";
-  const runtime = (["claude", "codex", "auto"].includes(rawRuntime) ? rawRuntime : "claude") as Config["runtime"];
+  const runtime = (
+    ["claude", "codebuddy", "codex", "auto"].includes(rawRuntime)
+      ? rawRuntime
+      : "claude"
+  ) as Config["runtime"];
 
   return {
     runtime,

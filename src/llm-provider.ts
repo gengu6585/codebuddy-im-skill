@@ -6,6 +6,8 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
@@ -69,8 +71,29 @@ export function isAuthError(text: string): boolean {
   return classifyAuthError(text) !== false;
 }
 
-const CLI_AUTH_USER_MESSAGE =
-  'Claude CLI is not logged in. Run `claude auth login`, then restart the bridge.';
+export type SdkCliBackend = 'claude' | 'codebuddy';
+
+const BACKEND_DISPLAY_NAME: Record<SdkCliBackend, string> = {
+  claude: 'Claude CLI',
+  codebuddy: 'CodeBuddy CLI',
+};
+
+const BACKEND_LOGIN_COMMAND: Record<SdkCliBackend, string> = {
+  claude: 'claude auth login',
+  codebuddy: 'codebuddy login',
+};
+
+function displayNameForBackend(backend: SdkCliBackend): string {
+  return BACKEND_DISPLAY_NAME[backend];
+}
+
+function loginCommandForBackend(backend: SdkCliBackend): string {
+  return BACKEND_LOGIN_COMMAND[backend];
+}
+
+function cliAuthUserMessageForBackend(backend: SdkCliBackend): string {
+  return `${displayNameForBackend(backend)} is not logged in. Run \`${loginCommandForBackend(backend)}\`, then restart the bridge.`;
+}
 
 const API_AUTH_USER_MESSAGE =
   'API credential error. Check your ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in config.env, ' +
@@ -112,10 +135,10 @@ export function buildSubprocessEnv(): Record<string, string> {
       // Pass through CTI_* so skill config is available
       if (k.startsWith('CTI_')) { out[k] = v; continue; }
     }
-    // Always pass through ANTHROPIC_* in claude/auto runtime —
+    // Always pass through ANTHROPIC_* in claude/codebuddy/auto runtime —
     // third-party API providers need these to reach the CLI subprocess.
     const runtime = process.env.CTI_RUNTIME || 'claude';
-    if (runtime === 'claude' || runtime === 'auto') {
+    if (runtime === 'claude' || runtime === 'codebuddy' || runtime === 'auto') {
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && k.startsWith('ANTHROPIC_')) out[k] = v;
       }
@@ -217,36 +240,46 @@ export function checkCliCompatibility(cliPath: string, env?: Record<string, stri
 }
 
 /**
- * Run a lightweight preflight check to verify the claude CLI can start
+ * Run a lightweight preflight check to verify the SDK backend CLI can start
  * and supports the flags required by the SDK.
  * Returns { ok, version?, error? }.
  */
-export function preflightCheck(cliPath: string): { ok: boolean; version?: string; error?: string } {
+export function preflightCheck(
+  cliPath: string,
+  backend: SdkCliBackend = 'claude',
+): { ok: boolean; version?: string; error?: string } {
   const cleanEnv = buildSubprocessEnv();
   const compat = checkCliCompatibility(cliPath, cleanEnv);
+  const cliDisplayName = displayNameForBackend(backend);
   if (!compat) {
-    return { ok: false, error: `claude CLI at "${cliPath}" failed to execute` };
+    return { ok: false, error: `${cliDisplayName} at "${cliPath}" failed to execute` };
   }
   if (compat.major !== undefined && compat.major < MIN_CLI_MAJOR) {
     return {
       ok: false,
       version: compat.version,
-      error: `claude CLI version ${compat.version} is too old (need >= ${MIN_CLI_MAJOR}.x). ` +
-        `This is likely an npm-installed 1.x CLI. Install the native CLI: https://docs.anthropic.com/en/docs/claude-code`,
+      error: backend === 'claude'
+        ? `Claude CLI version ${compat.version} is too old (need >= ${MIN_CLI_MAJOR}.x). ` +
+          `This is likely an npm-installed 1.x CLI. Install the native CLI: https://docs.anthropic.com/en/docs/claude-code`
+        : `CodeBuddy CLI version ${compat.version} is too old (need >= ${MIN_CLI_MAJOR}.x). ` +
+          `Update CodeBuddy Code to a recent 2.x build.`,
     };
   }
   if (compat.missingFlags) {
     return {
       ok: false,
       version: compat.version,
-      error: `claude CLI ${compat.version} is missing required flags: ${compat.missingFlags.join(', ')}. ` +
-        `Update the CLI: npm update -g @anthropic-ai/claude-code`,
+      error: backend === 'claude'
+        ? `Claude CLI ${compat.version} is missing required flags: ${compat.missingFlags.join(', ')}. ` +
+          `Update the CLI: npm update -g @anthropic-ai/claude-code`
+        : `CodeBuddy CLI ${compat.version} is missing required flags: ${compat.missingFlags.join(', ')}. ` +
+          `Update CodeBuddy Code to a newer build.`,
     };
   }
   return { ok: true, version: compat.version };
 }
 
-// ── Claude CLI path resolution ──
+// ── SDK backend CLI path resolution ──
 
 function isExecutable(p: string): boolean {
   try {
@@ -257,60 +290,81 @@ function isExecutable(p: string): boolean {
   }
 }
 
-/**
- * Resolve all `claude` executables found in PATH (Unix only).
- * Returns an array of absolute paths.
- */
-function findAllInPath(): string[] {
-  if (process.platform === 'win32') {
+function findAllInPath(commandNames: string[]): string[] {
+  const out: string[] = [];
+  for (const commandName of commandNames) {
     try {
-      return execSync('where claude', { encoding: 'utf-8', timeout: 3000 })
-        .trim().split('\n').map(s => s.trim()).filter(Boolean);
-    } catch { return []; }
+      const result = process.platform === 'win32'
+        ? execSync(`where ${commandName}`, { encoding: 'utf-8', timeout: 3000 })
+        : execSync(`which -a ${commandName}`, { encoding: 'utf-8', timeout: 3000 });
+      out.push(...result.trim().split('\n').map(s => s.trim()).filter(Boolean));
+    } catch {
+      continue;
+    }
   }
-  try {
-    // `which -a` lists all matches, not just the first
-    return execSync('which -a claude', { encoding: 'utf-8', timeout: 3000 })
-      .trim().split('\n').map(s => s.trim()).filter(Boolean);
-  } catch { return []; }
+  return out;
 }
 
-/**
- * Resolve the path to the `claude` CLI executable.
- *
- * Priority:
- *   1. CTI_CLAUDE_CODE_EXECUTABLE env var (explicit override)
- *   2. All `claude` executables in PATH — pick first compatible (>= 2.x)
- *   3. Common install locations — pick first compatible (>= 2.x)
- *
- * This multi-candidate approach handles the common scenario where
- * nvm/npm puts an old 1.x claude in PATH before the native 2.x CLI.
- */
-export function resolveClaudeCliPath(): string | undefined {
-  // 1. Explicit env var — trust the user
-  const fromEnv = process.env.CTI_CLAUDE_CODE_EXECUTABLE;
-  if (fromEnv && isExecutable(fromEnv)) return fromEnv;
+type CliBackendSpec = {
+  backend: SdkCliBackend;
+  explicitEnvVars: string[];
+  commandNames: string[];
+  wellKnownPaths: string[];
+};
 
-  // 2. Gather all candidates
+function getCliBackendSpec(backend: SdkCliBackend): CliBackendSpec {
   const isWindows = process.platform === 'win32';
-  const pathCandidates = findAllInPath();
-  const wellKnown = isWindows
-    ? [
-        process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\claude\\claude.exe` : '',
-        'C:\\Program Files\\claude\\claude.exe',
-      ].filter(Boolean)
-    : [
-        `${process.env.HOME}/.claude/local/claude`,
-        `${process.env.HOME}/.local/bin/claude`,
-        '/usr/local/bin/claude',
-        '/opt/homebrew/bin/claude',
-        `${process.env.HOME}/.npm-global/bin/claude`,
-      ];
+  if (backend === 'codebuddy') {
+    return {
+      backend,
+      explicitEnvVars: ['CTI_CODEBUDDY_EXECUTABLE', 'CTI_CLAUDE_CODE_EXECUTABLE'],
+      commandNames: ['codebuddy', 'cbc'],
+      wellKnownPaths: isWindows
+        ? [
+            process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\codebuddy\\codebuddy.exe` : '',
+            'C:\\Program Files\\codebuddy\\codebuddy.exe',
+          ].filter(Boolean)
+        : [
+            `${process.env.HOME}/.local/bin/codebuddy`,
+            '/usr/local/bin/codebuddy',
+            '/opt/homebrew/bin/codebuddy',
+            `${process.env.HOME}/.npm-global/bin/codebuddy`,
+          ],
+    };
+  }
+  return {
+    backend,
+    explicitEnvVars: ['CTI_CLAUDE_CODE_EXECUTABLE'],
+    commandNames: ['claude'],
+    wellKnownPaths: isWindows
+      ? [
+          process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs\\claude\\claude.exe` : '',
+          'C:\\Program Files\\claude\\claude.exe',
+        ].filter(Boolean)
+      : [
+          `${process.env.HOME}/.claude/local/claude`,
+          `${process.env.HOME}/.local/bin/claude`,
+          '/usr/local/bin/claude',
+          '/opt/homebrew/bin/claude',
+          `${process.env.HOME}/.npm-global/bin/claude`,
+        ],
+  };
+}
+
+function resolveCliPath(backend: SdkCliBackend): string | undefined {
+  const spec = getCliBackendSpec(backend);
+
+  for (const envVar of spec.explicitEnvVars) {
+    const fromEnv = process.env[envVar];
+    if (fromEnv && isExecutable(fromEnv)) return fromEnv;
+  }
+
+  const pathCandidates = findAllInPath(spec.commandNames);
 
   // Deduplicate while preserving order
   const seen = new Set<string>();
   const allCandidates: string[] = [];
-  for (const p of [...pathCandidates, ...wellKnown]) {
+  for (const p of [...pathCandidates, ...spec.wellKnownPaths]) {
     if (p && !seen.has(p)) {
       seen.add(p);
       allCandidates.push(p);
@@ -325,13 +379,17 @@ export function resolveClaudeCliPath(): string | undefined {
     const compat = checkCliCompatibility(p);
     if (compat?.compatible) {
       if (p !== pathCandidates[0] && pathCandidates.length > 0) {
-        console.log(`[llm-provider] Skipping incompatible CLI at "${pathCandidates[0]}", using "${p}" (${compat.version})`);
+        console.log(
+          `[llm-provider] Skipping incompatible ${displayNameForBackend(spec.backend)} at "${pathCandidates[0]}", using "${p}" (${compat.version})`,
+        );
       }
       return p;
     }
     if (compat) {
       // Version detected but too old — skip it entirely, do NOT fall back
-      console.warn(`[llm-provider] CLI at "${p}" is version ${compat.version} (need >= ${MIN_CLI_MAJOR}.x), skipping`);
+      console.warn(
+        `[llm-provider] ${displayNameForBackend(spec.backend)} at "${p}" is version ${compat.version} (need >= ${MIN_CLI_MAJOR}.x), skipping`,
+      );
     } else if (!firstUnverifiable) {
       // Executable exists but --version failed (timeout, crash, etc.)
       // Keep as last-resort fallback only if NO candidate had a parseable version
@@ -342,6 +400,73 @@ export function resolveClaudeCliPath(): string | undefined {
   // Only fall back to an unverifiable executable — never to a known-old one.
   // This avoids silently using a 1.x CLI that will crash on first message.
   return firstUnverifiable;
+}
+
+/**
+ * Resolve the path to the `claude` CLI executable.
+ */
+export function resolveClaudeCliPath(): string | undefined {
+  return resolveCliPath('claude');
+}
+
+/**
+ * Resolve the path to the `codebuddy` CLI executable.
+ */
+export function resolveCodeBuddyCliPath(): string | undefined {
+  return resolveCliPath('codebuddy');
+}
+
+function ensureCodeBuddySdkShim(cliPath: string): string {
+  if (process.platform === 'win32') {
+    return cliPath;
+  }
+
+  const runtimeDir = path.join(
+    process.env.CTI_HOME || path.join(os.homedir(), '.claude-to-im'),
+    'runtime',
+  );
+  const shimPath = path.join(runtimeDir, 'codebuddy-sdk-shim.sh');
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+REAL_CLI=${JSON.stringify(cliPath)}
+args=()
+skip_next=0
+has_strict_mcp=0
+has_mcp_config=0
+
+for arg in "$@"; do
+  if [ "$skip_next" -eq 1 ]; then
+    skip_next=0
+    continue
+  fi
+
+  case "$arg" in
+    --permission-prompt-tool)
+      skip_next=1
+      continue
+      ;;
+    --strict-mcp-config)
+      has_strict_mcp=1
+      ;;
+    --mcp-config)
+      has_mcp_config=1
+      ;;
+  esac
+
+  args+=("$arg")
+done
+
+if [ "$has_strict_mcp" -eq 1 ] && [ "$has_mcp_config" -eq 0 ]; then
+  args+=("--mcp-config" '{"mcpServers":{}}')
+fi
+
+exec "$REAL_CLI" "\${args[@]}"
+`;
+
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.writeFileSync(shimPath, script, { mode: 0o700 });
+  fs.chmodSync(shimPath, 0o700);
+  return shimPath;
 }
 
 // ── Multi-modal prompt builder ──
@@ -423,7 +548,12 @@ export class SDKLLMProvider implements LLMProvider {
   private cliPath: string | undefined;
   private autoApprove: boolean;
 
-  constructor(private pendingPerms: PendingPermissions, cliPath?: string, autoApprove = false) {
+  constructor(
+    private pendingPerms: PendingPermissions,
+    cliPath?: string,
+    autoApprove = false,
+    private backend: SdkCliBackend = 'claude',
+  ) {
     this.cliPath = cliPath;
     this.autoApprove = autoApprove;
   }
@@ -432,6 +562,7 @@ export class SDKLLMProvider implements LLMProvider {
     const pendingPerms = this.pendingPerms;
     const cliPath = this.cliPath;
     const autoApprove = this.autoApprove;
+    const backend = this.backend;
 
     return new ReadableStream({
       start(controller) {
@@ -509,7 +640,8 @@ export class SDKLLMProvider implements LLMProvider {
                 },
             };
             if (cliPath) {
-              queryOptions.pathToClaudeCodeExecutable = cliPath;
+              queryOptions.pathToClaudeCodeExecutable =
+                backend === 'codebuddy' ? ensureCodeBuddySdkShim(cliPath) : cliPath;
             }
 
             const prompt = buildPrompt(params.prompt, params.files);
@@ -564,7 +696,7 @@ export class SDKLLMProvider implements LLMProvider {
             const authKind = classifyAuthError(message) || classifyAuthError(stderrBuf);
             let userMessage: string;
             if (authKind === 'cli') {
-              userMessage = CLI_AUTH_USER_MESSAGE;
+              userMessage = cliAuthUserMessageForBackend(backend);
             } else if (authKind === 'api') {
               userMessage = API_AUTH_USER_MESSAGE;
             } else if (isTransportExit) {
@@ -576,8 +708,8 @@ export class SDKLLMProvider implements LLMProvider {
               lines.push(
                 '',
                 'Possible causes:',
-                '• Claude CLI not authenticated — run: claude auth login',
-                '• Claude CLI version too old (need >= 2.x) — run: claude --version',
+                `• ${displayNameForBackend(backend)} not authenticated — run: ${loginCommandForBackend(backend)}`,
+                `• ${displayNameForBackend(backend)} version too old (need >= 2.x) — run: ${backend === 'codebuddy' ? 'codebuddy --version' : 'claude --version'}`,
                 '• Missing ANTHROPIC_* env vars in daemon — check config.env',
                 '',
                 'Run `/claude-to-im doctor` to diagnose.',

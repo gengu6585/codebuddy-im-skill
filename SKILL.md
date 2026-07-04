@@ -115,8 +115,9 @@ For each enabled channel, collect one credential at a time. Tell the user where 
 **Step 3 — General settings**
 
 Ask for runtime, default working directory, model, and mode:
-- **Runtime**: `claude` (default), `codex`, `auto`
+- **Runtime**: `claude` (default), `codebuddy`, `codex`, `auto`
   - `claude` — uses Claude Code CLI + Claude Agent SDK (requires `claude` CLI installed)
+  - `codebuddy` — uses CodeBuddy Code CLI + Claude Agent SDK compatibility layer (requires `codebuddy` CLI installed)
   - `codex` — uses OpenAI Codex SDK (requires `codex` CLI; auth via `codex auth login` or `OPENAI_API_KEY`)
   - `auto` — tries Claude first, falls back to Codex if Claude CLI not found
 - **Working Directory**: default `$CWD`

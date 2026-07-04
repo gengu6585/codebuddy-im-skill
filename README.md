@@ -16,8 +16,8 @@ This skill runs a background daemon that connects your IM bots to Claude Code or
 You (Telegram/Discord/Feishu/QQ/WeChat)
   ↕ Bot API
 Background Daemon (Node.js)
-  ↕ Claude Agent SDK or Codex SDK (configurable via CTI_RUNTIME)
-Claude Code / Codex → reads/writes your codebase
+  ↕ Claude Agent SDK / CodeBuddy compatibility / Codex SDK (configurable via CTI_RUNTIME)
+Claude Code / CodeBuddy / Codex → reads/writes your codebase
 ```
 
 ## Features
@@ -34,6 +34,7 @@ Claude Code / Codex → reads/writes your codebase
 
 - **Node.js >= 20**
 - **Claude Code CLI** (for `CTI_RUNTIME=claude` or `auto`) — installed and authenticated (`claude` command available)
+- **CodeBuddy Code CLI** (for `CTI_RUNTIME=codebuddy`) — installed and authenticated (`codebuddy` command available)
 - **Codex CLI** (for `CTI_RUNTIME=codex` or `auto`) — `npm install -g @openai/codex`. Auth: run `codex auth login`, or set `OPENAI_API_KEY` (optional, for API mode)
 
 ## Installation

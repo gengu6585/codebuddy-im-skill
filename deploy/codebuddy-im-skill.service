@@ -1,0 +1,24 @@
+[Unit]
+Description=CodeBuddy IM Bridge (Claude-to-IM-skill daemon)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=HOME=/root
+Environment=CTI_HOME=/root/.claude-to-im
+Environment=NODE_TLS_REJECT_UNAUTHORIZED=0
+WorkingDirectory=/opt/tinkerlab/codebuddy-im-skill
+ExecStart=/usr/bin/node /opt/tinkerlab/codebuddy-im-skill/dist/daemon.mjs
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
