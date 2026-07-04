@@ -62,7 +62,11 @@ else
     exit 1
 fi
 
-echo "→ npm install + build"
+echo "→ npm install + build (claude-to-im core first)"
+cd "$CORE_DIR"
+npm ci
+npm run build
+
 cd "$SKILL_DIR"
 npm ci
 npm run build
